@@ -10,7 +10,7 @@ esphome:
       - switch.turn_on: dallas_power
 
 substitutions:
-  room: Kitchen # Room Name
+  room: Pool # Room Name
   entity_heater: input_boolean.tut_thermo_fire_lr
   entity_cooler: input_boolean.tut_thermo_cool_lr
   default_low: "20.0"
