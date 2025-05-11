@@ -1,0 +1,499 @@
+substitutions:
+  name: "pool-controller"
+  room: "test" # Room Name
+  entity_heater: switch.pool_heater
+  source_sensor_id: source_sensor_remote # for testing use source_sensor_remote
+  default_low: "26.67"  #80
+  default_mid: "30.0"   #86
+  default_hi: "31.11"   #88
+
+globals:
+  - id: _ready
+    type: bool
+    initial_value: 'false'
+
+web_server:
+  port: 80
+  include_internal: true
+  ota: false
+
+esphome:
+  name: ${room}-${name}
+  on_boot:
+    then:      
+      - display.page.show: starting_page
+      - delay: 5s
+      # get few readings to prevent nana from showing on display for water_temp_f
+      - repeat:
+          count: 2
+          then: 
+            - switch.turn_on: ntc_vcc
+            - delay: 500ms #IMPORTANT
+            - component.update: source_sensor                    
+            - switch.turn_off: ntc_vcc      
+            - component.update: water_temp_f
+            - delay: 5s 
+      - lambda: |-
+          id(_ready) = true;       
+      - delay: 3s 
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+  logs:
+    climate: debug
+    sensor: debug
+    switch: debug
+    resistance: none
+    adc: none
+    display: none
+
+# Enable Home Assistant API
+api:
+
+ota:
+
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esphome-Web-9B23Ac"
+    password: "sgxEvvkmlX6x"
+
+captive_portal:
+
+# Example configuration entry for ESP32
+i2c:
+  sda: 21
+  scl: 22
+  scan: true
+  id: bus_a    
+  frequency: 400kHz
+
+switch:
+  - platform: gpio
+    pin: 19
+    id: ntc_vcc
+
+  - platform: template
+    id: heat_cool
+    optimistic: true
+
+  - platform: template
+    id: brightness
+    optimistic: true
+
+  - platform: gpio
+    id: relay_heater
+    pin: 18
+    name: Pool Heater
+
+  - platform: gpio
+    id: pump_1
+    pin: 23
+    name: Pool Pump Spd 1
+
+  - platform: gpio
+    id: pump_2
+    pin: 25
+    name: Pool Pump Spd 2
+
+  - platform: gpio
+    id: pump_3
+    pin: 26
+    name: Pool Pump Spd 3
+
+  - platform: gpio
+    id: pump_4
+    pin: 27
+    name: Pool Pump Spd 4
+
+
+
+binary_sensor:
+  - platform: template
+    id: fire
+### ROTARY ENCODER BUTTON 
+  - platform: gpio
+    id: button
+    pin: 
+      number: GPIO15
+      inverted: true
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 30ms
+    on_press:
+    - if:
+        condition:
+          display_menu.is_active: this_graphical_display_menu
+        then:
+          - display_menu.enter: this_graphical_display_menu
+        else:
+          - display_menu.show:  this_graphical_display_menu
+
+#### THERMOSTAT #######
+climate:
+  - platform: thermostat
+
+    min_heating_off_time: 60s
+    min_heating_run_time: 60s
+    min_idle_time: 60s
+    heat_deadband: .3°C  # .3°C ~ .5°F
+    heat_overrun: .3°C   
+
+    visual:
+      min_temperature: 60°F
+      max_temperature: 92°F
+    name: "${room} Thermostat"
+    id: this_thermostat
+    sensor: water_temp
+
+    
+    preset:
+      - name: Heat Low
+        mode: heat
+        default_target_temperature_low: ${default_low}
+      
+      - name: Heat Medium
+        mode: heat
+        default_target_temperature_low: ${default_mid}
+      
+      - name: Heat High
+        mode: heat
+        default_target_temperature_low: ${default_hi}
+
+    preset_change:
+      - logger.log: Preset Changed
+
+    target_temperature_change_action:
+      - logger.log: 
+          format: "Temperature Target Changed - %.1f"
+          args: ['id(this_thermostat).target_temperature_low']
+
+    heat_action:
+      - switch.turn_on: relay_heater
+      - lambda: id(fire).publish_state(true);
+      - homeassistant.service:
+          service: homeassistant.turn_on
+          data:
+            entity_id: ${entity_heater}
+
+    idle_action:      
+      - switch.turn_off: relay_heater      
+      - lambda: id(fire).publish_state(false);
+      - homeassistant.service:
+          service: homeassistant.turn_off
+          data:
+            entity_id: ${entity_heater}
+
+####### Thermister Temp ###########
+sensor:
+  - platform: ntc
+    sensor: resistance_sensor
+    device_class: "temperature"
+    name: ${room} Water Temp
+    id: water_temp
+    calibration:      
+    # From ref table , range near 70f
+      - 19.9kOhm -> 10°C
+      - 10.0kOhm -> 25°C
+      - 5.32kOhm -> 40°C           
+      #From https://phoenixsensors.com/wp-content/uploads/2019/04/PTS20-Pool-Temperature-Sensor-v1.1.pdf
+      # - 52.38kOhm -> -9°C
+      # - 10.00kOhm -> 25°C
+      # - 1.75kOhm -> 70°C
+# FROM EXAMPLE   - seems ot work ok wihtin 2 deg     
+#        - 10.0kOhm -> 25°C
+#        - 27.219kOhm -> 0°C
+#       - 14.674kOhm -> 15°C        
+    accuracy_decimals: 1 #for display only   
+    filters:
+      - filter_out: nan
+      - delta: .25
+
+  - platform: resistance
+    id: resistance_sensor
+    sensor: ${source_sensor_id}
+    configuration: DOWNSTREAM
+    resistor: 6.8kOhm
+    name: ${room} Resistance Sensor
+    filters:
+      - filter_out: nan
+      - delta: 200
+          
+
+  - platform: homeassistant
+    id: source_sensor_remote
+    device_class: voltage
+    state_class: measurement
+    internal: false
+    entity_id: sensor.pool_adc
+    on_value:
+      then:
+      - logger.log: 
+          format: "---> Remote ADC: %1f<---"
+          args: ['id(source_sensor_remote).state' ]      
+
+  - platform: adc
+    id: source_sensor
+    name: ${room} ADC
+    pin: 36
+    # ESP32 pins GPIO32 through GPIO39 can be used. 36,39 rec
+    attenuation: auto #11db
+    update_interval: never
+    filters:
+      - filter_out: NaN
+      - median:
+          window_size: 20
+          send_every: 15
+          send_first_at: 2      
+      # - quantile:
+      #     window_size: 50
+      #     send_every: 5
+      #     send_first_at: 1
+      #     quantile: .9
+
+##### END OF THERMISTER ########      
+  - platform: template      
+    id: water_temp_f
+#    name: Water Temp F
+    lambda: |-
+      return id(water_temp).state * (9.0/5.0) + 32.0;
+    unit_of_measurement: "°F"
+    filters:
+      - filter_out: nan
+
+  - platform: template      
+    id: target_f
+#    name: Target Temp F
+    lambda: |-
+      return id(this_thermostat).target_temperature_low * (9.0/5.0) + 32.0;
+    unit_of_measurement: "°F"
+  - platform: template
+    id: oled_contrast
+
+####### BEGIN ROTARY ENCODER #################    
+  - platform: rotary_encoder
+    id: encoder
+    pin_a:
+      number: 16
+      mode: INPUT_PULLUP
+    pin_b:
+      number: 17
+      mode: INPUT_PULLUP
+    filters:
+      debounce: 30ms
+    on_clockwise:
+      - display_menu.down: this_graphical_display_menu
+    on_anticlockwise:
+      - display_menu.up: this_graphical_display_menu
+
+##### SETTINGS MENU ###############
+graphical_display_menu:
+  id: this_graphical_display_menu
+  display: oled1
+  font: font_xsmall
+  on_redraw:
+    then:
+      component.update: oled1
+  active: false
+  mode: rotary
+  items:
+    - type: number
+      text: "Set Temp "
+      number: set_temp
+      on_enter: 
+        then:
+          - number.set:
+              id: set_temp
+              value: !lambda return id(this_thermostat).target_temperature * (9.0/5.0) + 32.0;
+      on_leave:
+        then:
+          - climate.control:
+              id: this_thermostat
+              target_temperature: !lambda return (id(set_temp).state-32) /1.8;
+    - type: select
+      text: "Preset"
+      immediate_edit: false
+      select: presets
+      on_leave:
+        then:
+          - climate.control:
+              id: this_thermostat
+              custom_preset: !lambda return (it->get_value_text().c_str());
+    - type: menu
+      text: "PRESETS"
+      items:
+        - type: command
+          text: "Heat Low"
+          on_value:
+            then:
+              - climate.control:
+                  id: this_thermostat
+                  custom_preset: "Heat Low"    
+        - type: command
+          text: "Heat Med"
+          on_value:
+            then:
+              - climate.control:
+                  id: this_thermostat
+                  custom_preset: "Heat Medium"
+        - type: command
+          text: "Heat High"
+          on_value:
+            then:
+              - climate.control:
+                  id: this_thermostat
+                  custom_preset: "Heat High"
+        - type: back
+          text: "BACK"  
+          - type: command
+          text: "Exit Settings"
+          on_value:
+            - display_menu.hide: this_graphical_display_menu
+            - display.page.show: main_page 
+            - component.update: oled1
+    
+number:
+  - platform: template
+    id: set_temp
+    internal: true
+    optimistic: true
+    step: .5
+    min_value: 70
+    max_value: 95
+    on_value:
+      then:
+        lambda: 'ESP_LOGI("set_temp changed to: ", "value: %f", x);'
+  
+select:
+  - platform: template
+    internal: true
+    id: presets
+    optimistic: true
+    options:
+      - "Heat Low"
+      - "Heat Mid"
+      - "Heat High"
+
+####### END SETTINGS MENU ##################    
+interval:
+  - interval: 10s
+    then:
+      - switch.turn_on: ntc_vcc
+      - delay: 500ms #IMPORTANT
+
+      - component.update: ${source_sensor_id}                    
+      - switch.turn_off: ntc_vcc
+      - logger.log: 
+          format: "---> Water Temp - %.1f °F | Set Point: %.2f °F <---"
+          args: [' id(water_temp_f).state','id(target_f).state' ]
+      
+  - interval: 5s
+    then:
+      - if:
+          condition:            
+            - lambda: 'return id(_ready);'
+          then:
+            - if:
+                condition:
+                  display_menu.is_active: this_graphical_display_menu
+                then:
+                  - display_menu.show:  this_graphical_display_menu
+                else:
+                  - if:
+                      condition:
+                        - display.is_displaying_page: main_page
+                      then:
+                        - display.page.show: graph_page   
+                      else:
+                        - display.page.show: main_page
+                  - component.update: oled1
+      
+display:
+  - platform: ssd1306_i2c
+    model: "SH1106 128x64"
+    id: oled1
+    address: 0x3C
+    pages:
+      - id: main_page
+        lambda: |-      
+          if (id(fire).state) {id(ani_fire).next_frame(); it.image(0, 0, id(ani_fire));}    
+          else {it.image(0, 0, id(home_thermometer));}
+          it.print(64, 0,  id(font1), TextAlign::TOP_CENTER, "${room}");
+          it.printf(64, 7, id(font_big), TextAlign::TOP_CENTER, " %.1f°", id(water_temp_f).state);
+          it.printf(0, 64, id(font_small), TextAlign::BASELINE_LEFT, "SET:%.1f°", id(target_f).state);
+    #      it.printf(5, 0, id(OpenSans), "temp: %.1f", id(water_temp_f).state);
+    #      it.graph(0, 22, id(single_temperature_graph));
+      - id: graph_page
+        lambda: |-      
+          it.printf(64, 0, id(font1),TextAlign::TOP_CENTER, "TEMP %.1f", id(water_temp_f).state);
+          it.graph(0, 18, id(temp_target_graph));
+      - id: starting_page
+        lambda: |-
+          it.print(64,0,id(font1),TextAlign::TOP_CENTER,"POOL BOSS");
+          it.print(64,12,id(font_small),TextAlign::TOP_CENTER,"STARTING");
+          it.printf(64,30, id(font_small),TextAlign::TOP_CENTER,"READY: %s", id(_ready) ? "YES" : "NO");
+graph:
+  # Show bare-minimum auto-ranged graph
+  - id: temp_target_graph
+    duration: 1h
+#    x_grid: 15min
+#    y_grid: false
+    width: 128
+    height: 46
+    border: true
+    min_value: 75
+    max_value: 95
+    min_range: 10
+    max_range: 10
+    traces:
+      - sensor: water_temp_f
+        line_type: solid
+        line_thickness: 1
+      - sensor: target_f
+        line_type: solid
+        line_thickness: 2
+
+animation:
+  - file: "_icons/thermostat/fire.gif"
+    id: ani_fire
+image:
+  - file: "_icons/thermostat/home-thermometer.png"
+    id: home_thermometer
+  - file: "_icons/thermostat/arrow-left-circle-outline.png"
+    id: arrow_left
+  - file: "_icons/thermostat/arrow-right-circle-outline.png"
+    id: arrow_right
+  - file: "_icons/thermostat/lightbulb-on-outline.png"
+    id: bulb
+font:
+  - file: "_fonts/nasalization.ttf"
+    id: font1
+    size: 20
+
+  - file: "_fonts/refsan.ttf"
+    id: font_big
+    size: 40
+
+  - file: "_fonts/refsan.ttf"
+    id: font3
+    size: 22
+  - file: "_fonts/refsan.ttf"
+    id: font_small
+    size: 16  
+  - file: "_fonts/refsan.ttf"
+    id: font_xsmall
+    size: 14    
+  - file: "_fonts/BebasNeue-Regular.ttf"
+    id: font_cond
+    size: 16   
+  - file: "gfonts://Roboto"
+    id: roboto
+    size: 14
