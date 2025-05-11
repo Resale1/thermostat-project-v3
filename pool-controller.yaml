@@ -1,6 +1,6 @@
 substitutions:
-  name: "pool-controller"
-  room: "Pool" # Room Name
+  name: "thermostat"
+  room: "pool" # Room Name
   entity_heater: switch.pool_heater
   source_sensor_id: source_sensor # for testing use source_sensor_remote
   default_low: "26.67"  #80
@@ -15,7 +15,6 @@ globals:
 web_server:
   port: 80
   include_internal: true
-  ota: false
 
 esphome:
   name: ${room}-${name}
@@ -55,7 +54,7 @@ logger:
 api:
 
 ota:
-
+  - platform: esphome
 
 wifi:
   ssid: !secret wifi_ssid
@@ -353,12 +352,12 @@ graphical_display_menu:
                   custom_preset: "Heat High"
         - type: back
           text: "BACK"  
-          - type: command
-          text: "Exit Settings"
-          on_value:
-            - display_menu.hide: this_graphical_display_menu
-            - display.page.show: main_page 
-            - component.update: oled1
+    - type: command
+      text: "Exit Settings"
+      on_value:
+        - display_menu.hide: this_graphical_display_menu
+        - display.page.show: main_page 
+        - component.update: oled1
     
 number:
   - platform: template

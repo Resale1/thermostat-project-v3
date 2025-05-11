@@ -15,7 +15,6 @@ globals:
 web_server:
   port: 80
   include_internal: true
-  ota: false
 
 esphome:
   name: ${room}-${name}
@@ -45,7 +44,7 @@ logger:
 api:
 
 ota:
-
+  - platform: esphome
 
 wifi:
   ssid: !secret wifi_ssid
@@ -79,11 +78,11 @@ sensor:
   #   id: current_temperature
   #   entity_id: ${temperature_entity}
   #   internal: true
- - platform: homeassistant
-   id: current_temperature
-   entity_id: ${thermostat_entity}
-   attribute: current_temperature
-   internal: true
+  - platform: homeassistant
+    id: current_temperature
+    entity_id: ${thermostat_entity}
+    attribute: current_temperature
+    internal: true
 
   - platform: homeassistant
     id: target_temperature
@@ -91,13 +90,13 @@ sensor:
     attribute: temperature
     internal: true
 
-# Reports the WiFi signal strength/RSSI in dB
+  # Reports the WiFi signal strength/RSSI in dB
   - platform: wifi_signal 
     name: "WiFi Signal dB"
     id: wifi_signal_db
     update_interval: 60s
     entity_category: "diagnostic"
-# Reports the WiFi signal strength in %
+  # Reports the WiFi signal strength in %
   - platform: copy 
     source_id: wifi_signal_db
     name: "WiFi Signal Percent"
@@ -105,8 +104,26 @@ sensor:
       - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
     unit_of_measurement: "Signal %"
     entity_category: "diagnostic"
+####### BEGIN ROTARY ENCODER #################    
+  - platform: rotary_encoder
+    id: encoder
+    pin_a:
+      number: 17
+      mode: INPUT_PULLUP
+    pin_b:
+      number: 16
+      mode: INPUT_PULLUP
+    filters:
+      debounce: 30ms
+    on_clockwise:
+      - display_menu.down: this_graphical_display_menu
+    on_anticlockwise:
+      - display_menu.up: this_graphical_display_menu
 
 switch:
+binary_sensor:
+  - platform: template
+    id: fire
 
 ### ROTARY ENCODER BUTTON 
   - platform: gpio
@@ -126,23 +143,6 @@ switch:
         else:
           - display_menu.show:  this_graphical_display_menu
 
-
-####### BEGIN ROTARY ENCODER #################    
-  - platform: rotary_encoder
-    id: encoder
-    pin_a:
-      number: 16
-      mode: INPUT_PULLUP
-    pin_b:
-      number: 17
-      mode: INPUT_PULLUP
-    filters:
-      debounce: 30ms
-    on_clockwise:
-      - display_menu.down: this_graphical_display_menu
-    on_anticlockwise:
-      - display_menu.up: this_graphical_display_menu
-
 ##### SETTINGS MENU ###############
 graphical_display_menu:
   id: this_graphical_display_menu
@@ -161,21 +161,25 @@ graphical_display_menu:
         then:
           - number.set:
               id: set_temp
-              value: !lambda return id(this_thermostat).target_temperature * (9.0/5.0) + 32.0;
+              value: !lambda return id(target_temperature).state * (9.0/5.0) + 32.0;
       on_leave:
         then:
-          - climate.control:
-              id: this_thermostat
-              target_temperature: !lambda return (id(set_temp).state-32) /1.8;
+          - homeassistant.service:
+              service: climate.set_temperature 
+              data:
+                entity_id: ${thermostat_entity}
+                temperature: !lambda return id(set_temp).state;
     - type: select
       text: "Preset"
       immediate_edit: false
       select: presets
       on_leave:
         then:
-          - climate.control:
-              id: this_thermostat
-              custom_preset: !lambda return (it->get_value_text().c_str());
+          - homeassistant.service:
+              service: climate.set_preset_mode
+              data:
+                entity_id: ${thermostat_entity}
+                preset_mode: !lambda return (it->get_value_text().c_str());
     - type: menu
       text: "PRESETS"
       items:
@@ -183,32 +187,38 @@ graphical_display_menu:
           text: "Heat Low"
           on_value:
             then:
-              - climate.control:
-                  id: this_thermostat
-                  custom_preset: "Heat Low"    
+              - homeassistant.service:
+                  service: climate.set_preset_mode
+                  data:
+                    entity_id: ${thermostat_entity}
+                    preset_mode: "Heat Low"                    
         - type: command
           text: "Heat Med"
           on_value:
             then:
-              - climate.control:
-                  id: this_thermostat
-                  custom_preset: "Heat Medium"
+              - homeassistant.service:
+                  service: climate.set_preset_mode
+                  data:
+                    entity_id: ${thermostat_entity}
+                    preset_mode: "Heat Medium"   
         - type: command
           text: "Heat High"
           on_value:
             then:
-              - climate.control:
-                  id: this_thermostat
-                  custom_preset: "Heat High"
+              - homeassistant.service:
+                  service: climate.set_preset_mode
+                  data:
+                    entity_id: ${thermostat_entity}
+                    preset_mode: "Heat High"   
         - type: back
           text: "BACK"  
-          - type: command
-          text: "Exit Settings"
-          on_value:
-            - display_menu.hide: this_graphical_display_menu
-            - display.page.show: main_page 
-            - component.update: oled1
-    
+    - type: command
+      text: "Exit Settings"
+      on_value:
+        - display_menu.hide: this_graphical_display_menu
+        - display.page.show: main_page 
+        - component.update: oled1
+      
 number:
   - platform: template
     id: set_temp
@@ -220,7 +230,27 @@ number:
     on_value:
       then:
         lambda: 'ESP_LOGI("set_temp changed to: ", "value: %f", x);'
-  
+
+  - platform: template
+    id: target_temperature_f
+    step: .5
+    min_value: 70.0
+    max_value: 95.0
+    lambda: 'return id(target_temperature).state * (9.0/5.0) + 32.0;'
+    set_action:
+      then:
+        lambda: 'ESP_LOGI("set_temp changed to: ", "value: %f", x);'
+
+  - platform: template
+    id: current_temperature_f
+    step: .5
+    min_value: 70.0
+    max_value: 95.0
+    internal: true
+    lambda: 'return id(current_temperature).state * (9.0/5.0) + 32.0;'
+    set_action:
+      then:
+        lambda: 'ESP_LOGI("set_temp changed to: ", "value: %f", x);'          
 select:
   - platform: template
     internal: true
@@ -228,18 +258,14 @@ select:
     optimistic: true
     options:
       - "Heat Low"
-      - "Heat Mid"
+      - "Heat Medium"
       - "Heat High"
 
 ####### END SETTINGS MENU ##################    
 interval:
   - interval: 10s
     then:
-      - switch.turn_on: ntc_vcc
       - delay: 500ms #IMPORTANT
-
-      - component.update: ${source_sensor_id}                    
-      - switch.turn_off: ntc_vcc
       - logger.log: 
           format: "---> Water Temp - %.1f °F | Set Point: %.2f °F <---"
           args: [' id(current_temperature).state','id(target_temperature).state' ]
